@@ -16,6 +16,7 @@
 import copy
 import gc
 import inspect
+import json
 import os.path
 import random
 import tempfile
@@ -25,7 +26,7 @@ from typing import Dict, List, Tuple
 
 from huggingface_hub import HfApi
 from requests.exceptions import HTTPError
-from transformers import AutoModel, is_torch_available, logging
+from transformers import AutoModel, AutoModelForSequenceClassification, is_torch_available, logging
 from transformers.file_utils import WEIGHTS_NAME, is_torch_fx_available
 from transformers.models.auto import get_values
 from transformers.testing_utils import (
@@ -1532,6 +1533,35 @@ class ModelTesterMixin:
 
                     loss.backward()
 
+    def test_load_with_mismatched_shapes(self):
+        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
+
+        for model_class in self.all_model_classes:
+            if model_class not in get_values(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING):
+                continue
+
+            with self.subTest(msg=f"Testing {model_class}"):
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    model = model_class(config)
+                    model.save_pretrained(tmp_dir)
+
+                    # Fails when we don't set ignore_mismatched_sizes=True
+                    with self.assertRaises(RuntimeError) as e:
+                        print(type(e))
+                        new_model = AutoModelForSequenceClassification.from_pretrained(tmp_dir, num_labels=42)
+
+                    logger = logging.get_logger("transformers.modeling_utils")
+                    with CaptureLogger(logger) as cl:
+                        new_model = AutoModelForSequenceClassification.from_pretrained(
+                            tmp_dir, num_labels=42, ignore_mismatched_sizes=True
+                        )
+                    self.assertIn("the shapes did not match", cl.out)
+
+                    new_model.to(torch_device)
+                    inputs = self._prepare_for_class(inputs_dict, model_class)
+                    logits = new_model(**inputs).logits
+                    self.assertEqual(logits.shape[1], 42)
+
 
 global_rng = random.Random()
 
@@ -1588,8 +1618,11 @@ class ModelUtilsTest(TestCasePlus):
             model, loading_info = BertModel.from_pretrained(model_name, output_loading_info=True)
             self.assertIsNotNone(model)
             self.assertIsInstance(model, PreTrainedModel)
-            for value in loading_info.values():
-                self.assertEqual(len(value), 0)
+
+            self.assertEqual(len(loading_info["missing_keys"]), 0)
+            self.assertEqual(len(loading_info["unexpected_keys"]), 8)
+            self.assertEqual(len(loading_info["mismatched_keys"]), 0)
+            self.assertEqual(len(loading_info["error_msgs"]), 0)
 
             config = BertConfig.from_pretrained(model_name, output_attentions=True, output_hidden_states=True)
 
@@ -1631,9 +1664,11 @@ class ModelUtilsTest(TestCasePlus):
     @require_torch
     def test_model_from_pretrained_torch_dtype(self):
         # test that the model can be instantiated with dtype of either
-        # 1. config.torch_dtype setting in the saved model (priority)
-        # 2. via autodiscovery by looking at model weights
+        # 1. explicit from_pretrained's torch_dtype argument
+        # 2. via autodiscovery by looking at model weights (torch_dtype="auto")
         # so if a model.half() was saved, we want it to be instantiated as such.
+        #
+        # test an explicit model class, but also AutoModel separately as the latter goes through a different code path
         model_path = self.get_auto_remove_tmp_dir()
 
         # baseline - we know TINY_T5 is fp32 model
@@ -1656,11 +1691,24 @@ class ModelUtilsTest(TestCasePlus):
         model = model.half()
         model.save_pretrained(model_path)
         model = T5ForConditionalGeneration.from_pretrained(model_path, torch_dtype="auto")
-        self.assertEqual(model.config.torch_dtype, "float16")  # tests `config.torch_dtype` saving
+        self.assertEqual(model.config.torch_dtype, torch.float16)
         self.assertEqual(model.dtype, torch.float16)
+
+        # tests `config.torch_dtype` saving
+        with open(f"{model_path}/config.json") as f:
+            config_dict = json.load(f)
+        self.assertEqual(config_dict["torch_dtype"], "float16")
 
         # test fp16 save_pretrained, loaded with the explicit fp16
         model = T5ForConditionalGeneration.from_pretrained(model_path, torch_dtype=torch.float16)
+        self.assertEqual(model.dtype, torch.float16)
+
+        # test AutoModel separately as it goes through a different path
+        # test auto-detection
+        model = AutoModel.from_pretrained(TINY_T5, torch_dtype="auto")
+        self.assertEqual(model.dtype, torch.float32)
+        # test forcing an explicit dtype
+        model = AutoModel.from_pretrained(TINY_T5, torch_dtype=torch.float16)
         self.assertEqual(model.dtype, torch.float16)
 
 

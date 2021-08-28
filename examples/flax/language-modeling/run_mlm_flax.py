@@ -214,7 +214,7 @@ class FlaxDataCollatorForLanguageModeling:
 
     def mask_tokens(
         self, inputs: np.ndarray, special_tokens_mask: Optional[np.ndarray]
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
         """
@@ -344,6 +344,20 @@ if __name__ == "__main__":
         if extension == "txt":
             extension = "text"
         datasets = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir)
+
+        if "validation" not in datasets.keys():
+            datasets["validation"] = load_dataset(
+                extension,
+                data_files=data_files,
+                split=f"train[:{data_args.validation_split_percentage}%]",
+                cache_dir=model_args.cache_dir,
+            )
+            datasets["train"] = load_dataset(
+                extension,
+                data_files=data_files,
+                split=f"train[{data_args.validation_split_percentage}%:]",
+                cache_dir=model_args.cache_dir,
+            )
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
@@ -663,7 +677,6 @@ if __name__ == "__main__":
 
                 # Save metrics
                 if has_tensorboard and jax.process_index() == 0:
-                    cur_step = epoch * (len(tokenized_datasets["train"]) // train_batch_size)
                     write_eval_metric(summary_writer, eval_metrics, cur_step)
 
             if cur_step % training_args.save_steps == 0 and cur_step > 0:

@@ -25,6 +25,7 @@ from distutils.util import strtobool
 from io import StringIO
 from pathlib import Path
 from typing import Iterator, Union
+from unittest import mock
 
 from transformers import logging as transformers_logging
 
@@ -1007,7 +1008,7 @@ def mockenv(**kwargs):
         use_tf = os.getenv("USE_TF", False)
 
     """
-    return unittest.mock.patch.dict(os.environ, kwargs)
+    return mock.patch.dict(os.environ, kwargs)
 
 
 # from https://stackoverflow.com/a/34333710/9201239
@@ -1328,7 +1329,7 @@ def nested_simplify(obj, decimals=3):
         return nested_simplify(obj.numpy().tolist())
     elif isinstance(obj, float):
         return round(obj, decimals)
-    elif isinstance(obj, np.float32):
+    elif isinstance(obj, (np.int32, np.float32)):
         return nested_simplify(obj.item(), decimals)
     else:
         raise Exception(f"Not supported: {type(obj)}")
